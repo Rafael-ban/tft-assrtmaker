@@ -1,0 +1,8 @@
+# 1.9寸 TFT 素材编辑器（精简版）依赖
+# 参考框架 neo-assetmaker-dev v2.1.4 的技术栈：PyQt6 + PyAV + OpenCV + ffmpeg(libx264)
+PyQt6>=6.6            # GUI（框架用 PyQt6 + qfluentwidgets，本精简版仅用原生 PyQt6）
+av>=11               # PyAV：帧精确解码/seek（替代 cv2.VideoCapture）
+opencv-python>=4.8   # 裁剪/旋转/缩放/画框（cv2）
+numpy>=1.24
+Pillow>=10
+imageio-ffmpeg>=0.5  # 自带含 libx264 的 ffmpeg 二进制（系统无 ffmpeg 时回退）

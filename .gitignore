@@ -1,0 +1,27 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 素材文件（原始视频/成品/截图，体积大，不入库）
+1.9寸tft素材功能详情/
+*.mp4
+*.mov
+*.mkv
+*.avi
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
