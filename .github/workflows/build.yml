@@ -19,6 +19,11 @@ jobs:
   build:
     runs-on: windows-latest
 
+    env:
+      # Windows runner 的 stdout 默认 cp1252 且被重定向为管道，
+      # 打印中文会抛 UnicodeEncodeError 使构建失败。开启 Python UTF-8 模式。
+      PYTHONUTF8: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

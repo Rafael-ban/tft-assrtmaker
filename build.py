@@ -30,6 +30,15 @@ import subprocess
 import sys
 import sysconfig
 
+# Windows CI（GitHub Actions）上 stdout 默认走 cp1252 且被重定向为管道，
+# 打印中文会抛 UnicodeEncodeError 导致构建失败。此处强制 UTF-8 输出。
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 PROJECT_NAME = "TFTAssetMaker"
 VERSION = "0.1.0"
 MAIN_SCRIPT = "main.py"
