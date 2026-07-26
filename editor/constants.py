@@ -11,12 +11,9 @@ APP_VERSION = "0.1.0"
 # ── 输出文件名 ─────────────────────────────────────────────
 DEFAULT_OUTPUT_NAME = "loop.mp4"
 
-# ── 电子通行证原始 x264 预设（逐字摘自框架真实源码，作引用/对比用）──
+# ── 电子通行证原始 x264 预设（逐字摘自框架真实源码，作引用/对比基线）──
 # 来源: core/video_processor.py:17-27 (momovlink/neo-assetmaker-dev v2.1.4)
-# 说明: 该预设含 partitions=all（隐含 i8x8/8x8dct，属 High profile 特性），
-#       框架 core/export_service.py:395 因此配 `-profile:v high`。
-#       ⚠ 本项目目标机 1.9" TFT 实测 loop.mp4 为 Main@L1.3（见下 profile="main"），
-#       故 TFT 预设改用 -profile:v main（High-only 特性由 x264 自动剔除）。
+# 框架 core/export_service.py:391-401 配 `-profile:v high -preset veryslow -crf 26`。
 X264_PARAMS_EPASS = (
     "partitions=all"
     ":rc-lookahead=150"
@@ -27,6 +24,38 @@ X264_PARAMS_EPASS = (
     ":chroma-qp-offset=-3"
     ":aq-mode=1:aq-strength=0.6:trellis=2"
     ":deblock=1,1:psy-rd=0.4,0"
+)
+
+# ── 1.9"TFT 实用预设（以上面框架预设为基底，按设备实测收紧 DPB）──
+#
+# 【为何必须改：旧写法无效的实证】
+#   旧写法 = 不传 -x264-params。x264 遂用 veryslow 默认 ref=16/bframes=8/
+#   b-pyramid=normal，实测导出 SPS: level_idc=21(L2.1)、max_num_ref_frames=16、
+#   **max_dec_frame_buffering=16**；DPB 占用模拟显示输出第 8~16 帧即超出小解码器
+#   帧缓冲 → 设备播 ~10 帧卡死（用户实际症状）。
+#
+# 【为何这样改：新写法有效的实证】
+#   设备能正常播放的参考 loop.mp4，其 SPS 实测为：level_idc=13(L1.3)、
+#   pic_order_cnt_type=2、max_num_ref_frames=1、**max_dec_frame_buffering=1**、
+#   无 ctts（严格 IPPP，显示序=解码序）。本预设导出的 SPS 与之逐项一致。
+#
+# 【与框架预设的差异及原因】（框架 X264_PARAMS 实测 max_dec_frame_buffering=4，
+#   仍带 b_pyramid=2 与 ctts，只修好 level、修不好重排序，故不能照抄）
+#   - ref=3      -> ref=1       ：对齐参考文件，DPB 降到 1
+#   - bframes=16 -> bframes=0   ：去除 B 帧重排序，消除 ctts，PTS==DTS
+#   - keyint=300 -> keyint=90   ：对齐参考文件的 IDR 间隔（5 个同步样本/414 帧）
+#   - 去掉 partitions=all（i8x8 属 High profile，Main 下本就被 x264 剔除）
+#   - 去掉 direct=auto / no-weightb=0 / b-adapt（均为 B 帧相关，bframes=0 后无意义）
+#   - rc-lookahead 150 -> 60    ：无 B 帧时过长前瞻无收益
+#   其余画质档（me/subme/merange/no-fast-pskip/aq/trellis/deblock/psy-rd/
+#   chroma-qp-offset）逐字沿用框架预设。
+X264_PARAMS_TFT = (
+    "ref=1:bframes=0"
+    ":keyint=90:min-keyint=30:scenecut=0"
+    ":rc-lookahead=60"
+    ":me=umh:subme=9:merange=48:no-fast-pskip=1"
+    ":aq-mode=1:aq-strength=0.6:trellis=2"
+    ":deblock=1,1:psy-rd=0.4,0:chroma-qp-offset=-3"
 )
 
 # ── 分辨率规格 ────────────────────────────────────────────
@@ -47,9 +76,11 @@ RESOLUTION_SPECS: Dict[str, Dict[str, Any]] = {
         "rotate_180": False,
         # 编码目标：对齐实测 loop.mp4（H.264 Main@L1.3, yuv420p, 30fps CFR）
         "profile": "main",
+        "level": "1.3",          # 对齐参考 loop.mp4 的 level_idc=13
         "preset": "veryslow",    # 沿用框架质量档 core/export_service.py:377
         "crf": 26,               # 沿用框架 core/export_service.py:376
         "pix_fmt": "yuv420p",
+        "x264_params": X264_PARAMS_TFT,   # ★ 关键：不传会退化到 ref=16/L2.1，设备播 ~10 帧卡死
         "aspect_w": 320,
         "aspect_h": 192,
         "description": "1.9寸TFT (可视320x170, 编码320x192, 底部22px padding, Main@L1.3)",

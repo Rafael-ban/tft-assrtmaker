@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from . import frame_ops
-from .constants import get_resolution_spec
+from .constants import X264_PARAMS_TFT, get_resolution_spec
 from .video_source import VideoSource
 
 
@@ -86,17 +86,27 @@ class ExportWorker(QThread):
                 out = frame_ops.crop_and_resize(rotated, self.cropbox, tw, th)
                 ok, buf = cv2.imencode(".png", out)
                 if ok:
+                    # ★ 文件名必须用 written（连续计数）而非源帧号：
+                    #   ffmpeg image2 解复用器遇到序号缺口会「静默停在缺口处」
+                    #   （rc=0、无报错）。实测：缺第 10 号 -> 只出 10 帧。
                     with open(os.path.join(temp_dir, f"frame_{written:06d}.png"),
                               "wb") as f:
                         f.write(buf.tobytes())
                     written += 1
-                if written % 10 == 0:
-                    self.progress.emit(
-                        int(written / total * 60), f"处理帧 {written}/{total}")
+                    if written % 10 == 0:
+                        self.progress.emit(
+                            int(written / total * 60), f"处理帧 {written}/{total}")
             src.close()
 
             if written == 0:
                 self.failed.emit("没有成功写入任何帧（请检查入/出点）")
+                return
+            # 静默截断护栏（对应框架 core/export_service.py:335-340 的比例检查，
+            # 框架只 warning，这里升级为硬失败：截断的 loop.mp4 不可用）。
+            if written < total * 0.9:
+                self.failed.emit(
+                    f"帧数异常：期望 {total} 帧，实际仅写入 {written} 帧。\n"
+                    f"可能是源视频时间戳异常或已损坏。")
                 return
 
             self.progress.emit(65, "正在用 libx264 编码...")
@@ -114,17 +124,26 @@ class ExportWorker(QThread):
 
     def _encode(self, temp_dir: str, spec: dict, tw: int, th: int):
         pattern = os.path.join(temp_dir, "frame_%06d.png")
-        fps_str = f"{self.fps:g}"
+        # 用 str() 而非 f"{fps:g}"：:g 只保留 6 位有效数字，会把 NTSC 有理帧率
+        # 30000/1001 压成 29.97 -> ffmpeg 复原为 2997/100（错误时基）。
+        # str(29.97002997002997) 则能被 ffmpeg 正确还原成 30000/1001。
+        fps_str = str(self.fps)
         cmd = [
             self.ffmpeg_path, "-hide_banner", "-y",
             "-framerate", fps_str,
             "-i", pattern,
             "-c:v", "libx264",
             "-profile:v", spec.get("profile", "main"),     # main（对齐 loop.mp4）
+            "-level:v", spec.get("level", "1.3"),           # L1.3（对齐 loop.mp4）
             "-preset", spec.get("preset", "veryslow"),      # export_service.py:377
             "-crf", str(spec.get("crf", 26)),               # export_service.py:376
             "-pix_fmt", spec.get("pix_fmt", "yuv420p"),
-            "-r", fps_str,                                   # 输出 CFR
+            # ★ 必传：缺省会退化到 x264 veryslow 默认 ref=16/bframes=8/b-pyramid，
+            #   导致 L2.1 + max_dec_frame_buffering=16，TFT 解码器播 ~10 帧即卡死。
+            #   参数说明见 constants.X264_PARAMS_TFT。
+            "-x264-params", spec.get("x264_params", X264_PARAMS_TFT),
+            # 不传输出侧 -r：输入 PNG 序列本身已是 CFR，-r 是重采样滤镜，
+            # 一旦与 -framerate 不一致会静默丢帧/复制帧（框架同样不传）。
             "-an",                                           # 剥离音频
             "-movflags", "+faststart",
             self.output_path,

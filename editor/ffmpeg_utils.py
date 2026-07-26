@@ -21,24 +21,68 @@ except ImportError:  # pragma: no cover
     HAS_AV = False
 
 
+# ── 应用目录（冻结/打包感知）────────────────────────────────
+def get_app_dir() -> str:
+    """获取应用程序所在目录（支持 cx_Freeze / PyInstaller / Nuitka 打包）。
+
+    逐字复刻框架 utils/file_utils.py:191-201 (get_app_dir)：
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(sys.executable)
+
+    这是「内置 ffmpeg 在 exe 中可被找到」的全部契约：cx_Freeze 冻结后
+    sys.frozen=True，sys.executable 即冻结输出根目录下的 exe，而 build.py
+    的 include_files 正是把 ffmpeg.exe 放在该根目录。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 # ── ffmpeg / ffprobe 二进制定位 ─────────────────────────────
 def find_ffmpeg() -> str:
-    """返回可用的 ffmpeg 可执行文件路径（含 libx264 优先）。
+    """返回可用的 ffmpeg 可执行文件路径（须含 libx264）。
 
-    顺序：系统 PATH → imageio-ffmpeg 自带二进制（含 libx264）。
+    查找顺序（前两级复刻框架 core/video_processor.py:30-49 find_ffmpeg，
+    其 docstring 说明「仅限应用自带，避免多版本冲突」）：
+      1. 应用目录根部 ffmpeg.exe        ← 打包后的内置 ffmpeg
+      2. 应用目录 ffmpeg/ 子目录
+      3. imageio-ffmpeg 自带二进制      ← 开发环境（本项目扩展）
+      4. 系统 PATH                      ← 最后兜底（本项目扩展）
     """
-    sys_ff = shutil.which("ffmpeg")
-    if sys_ff:
-        return sys_ff
+    exe = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    app_dir = get_app_dir()
+
+    # 1. 应用程序目录（打包后 include_files 的落点）
+    app_ffmpeg = os.path.join(app_dir, exe)
+    if os.path.isfile(app_ffmpeg):
+        return app_ffmpeg
+
+    # 2. ffmpeg 子目录
+    sub_ffmpeg = os.path.join(app_dir, "ffmpeg", exe)
+    if os.path.isfile(sub_ffmpeg):
+        return sub_ffmpeg
+
+    # 3. imageio-ffmpeg 自带（开发环境；其二进制含 libx264）
     try:
         import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+        if path and os.path.isfile(path):
+            return path
     except Exception:
-        return ""
+        pass
+
+    # 4. 系统 PATH
+    return shutil.which("ffmpeg") or ""
 
 
 def find_ffprobe() -> str:
-    """返回系统 ffprobe 路径（imageio-ffmpeg 不含 ffprobe，可能为空）。"""
+    """返回 ffprobe 路径（同样优先应用自带；imageio-ffmpeg 不含 ffprobe）。"""
+    exe = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+    app_dir = get_app_dir()
+    for cand in (os.path.join(app_dir, exe),
+                 os.path.join(app_dir, "ffmpeg", exe)):
+        if os.path.isfile(cand):
+            return cand
     return shutil.which("ffprobe") or ""
 
 

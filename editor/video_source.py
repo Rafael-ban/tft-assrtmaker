@@ -40,6 +40,9 @@ class VideoSource:
         self._stream = None
         self._fps: float = 30.0
         self._time_base = None
+        # 流首帧 pts（很多 MP4/TS 转封装文件不为 0）。所有 pts→帧号换算都必须
+        # 先减去它，否则帧号整体偏移，导出会提前 break（见 get_frame/iter_frames）。
+        self._start_pts: int = 0
         self.info: Optional[SourceInfo] = None
         self._cache: "OrderedDict[int, np.ndarray]" = OrderedDict()
         self._cache_size = cache_size
@@ -57,6 +60,7 @@ class VideoSource:
         self._fps = (float(self._stream.average_rate)
                      if self._stream.average_rate else 30.0)
         self._time_base = self._stream.time_base
+        self._start_pts = self._stream.start_time or 0
         total = self._stream.frames or 0
         if total == 0 and self._stream.duration and self._time_base:
             total = round(float(self._stream.duration * self._time_base)
@@ -116,18 +120,22 @@ class VideoSource:
         fps = self._fps
         try:
             if tb and fps > 0:
-                target_pts = round((index / fps) / tb)
+                # seek 目标须叠加流首帧 pts，否则偏移流会定位到错误位置
+                target_pts = self._start_pts + round((index / fps) / tb)
                 self._container.seek(target_pts, stream=self._stream,
                                      backward=True)
             for av_frame in self._container.decode(self._stream):
                 if av_frame.pts is not None and tb and fps > 0:
-                    cur = round(float(av_frame.pts * tb) * fps)
+                    # 减去 _start_pts 才是 0 基帧号
+                    cur = round(float((av_frame.pts - self._start_pts) * tb) * fps)
                 else:
                     cur = index
                 if cur < index:
                     continue
                 frame = av_frame.to_ndarray(format="bgr24")
-                self._cache_put(cur, frame)
+                # 以「请求的 index」为缓存键：seek 过冲时 cur 可能 != index，
+                # 若用 cur 作键会永远命中不了，导致每次预览都重新解码且返回错帧。
+                self._cache_put(index, frame)
                 return frame
         except Exception:
             return None
@@ -142,14 +150,15 @@ class VideoSource:
             return
         tb = self._time_base
         fps = self._fps
-        # 为导出使用独立解码位置：seek 到 start 前关键帧
-        if start > 0 and tb and fps > 0:
-            target_pts = round((start / fps) / tb)
+        # 无条件 seek：start==0 时若跳过 seek，容器会从「上次用完的位置」继续，
+        # 复用同一 VideoSource 时会丢帧甚至在 EOF 处抛 av.error.EOFError。
+        if tb and fps > 0:
+            target_pts = self._start_pts + round((start / fps) / tb)
             self._container.seek(target_pts, stream=self._stream, backward=True)
         idx_fallback = 0
         for av_frame in self._container.decode(self._stream):
             if av_frame.pts is not None and tb and fps > 0:
-                cur = round(float(av_frame.pts * tb) * fps)
+                cur = round(float((av_frame.pts - self._start_pts) * tb) * fps)
             else:
                 cur = idx_fallback
             idx_fallback += 1

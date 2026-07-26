@@ -18,7 +18,12 @@ __pycache__/
 # 构建产物
 build/
 dist/
+TFTAssetMaker/
 *.egg-info/
+
+# 打包用的 ffmpeg 二进制（由 build.py 自动准备，不入库）
+ffmpeg.exe
+ffprobe.exe
 
 # 编辑器 / 系统
 .vscode/

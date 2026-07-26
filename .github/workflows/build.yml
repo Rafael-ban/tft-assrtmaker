@@ -1,0 +1,117 @@
+name: Build Windows EXE
+
+# 构建方式参考框架 Rafael-ban/neo-assetmaker-dev 的 .github/workflows/build-app.yml：
+# 在 windows runner 上用 cx-Freeze 冻结，ffmpeg 由 CI 从 BtbN FFmpeg-Builds 下载
+# 到仓库根目录（不入库），再由 build.py 的 include_files 打进产物根目录。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:        # 支持手动触发
+
+permissions:
+  contents: write           # 打 tag 时创建 Release 需要
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "cx_Freeze>=7.0,<8.0"
+
+      - name: Cache FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ffmpeg.exe
+            ffprobe.exe
+          key: ffmpeg-win64-n7.1-gpl
+
+      # 与框架 CI 同源：BtbN FFmpeg-Builds 的 win64-gpl 构建（含 libx264）
+      - name: Download FFmpeg
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_temp
+          $ffmpegExe  = Get-ChildItem -Path ffmpeg_temp -Recurse -Filter "ffmpeg.exe"  | Select-Object -First 1
+          $ffprobeExe = Get-ChildItem -Path ffmpeg_temp -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          Copy-Item $ffmpegExe.FullName  -Destination "ffmpeg.exe"
+          Copy-Item $ffprobeExe.FullName -Destination "ffprobe.exe"
+          Remove-Item -Recurse -Force ffmpeg_temp, ffmpeg.zip
+
+      - name: Verify ffmpeg has libx264
+        shell: pwsh
+        run: |
+          $out = & .\ffmpeg.exe -hide_banner -encoders
+          if ($out -match "libx264") { Write-Host "libx264 OK" }
+          else { Write-Error "打包用的 ffmpeg 缺少 libx264，导出会失败"; exit 1 }
+
+      - name: Build with cx-Freeze
+        run: python build.py
+
+      - name: Verify build artifacts
+        shell: pwsh
+        run: |
+          $required = @(
+            "TFTAssetMaker\TFTAssetMaker.exe",
+            "TFTAssetMaker\ffmpeg.exe",
+            "TFTAssetMaker\lib\av",
+            "TFTAssetMaker\lib\av.libs",
+            "TFTAssetMaker\lib\PyQt6\Qt6\plugins\platforms"
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) { Write-Error "缺少产物: $($missing -join ', ')"; exit 1 }
+          Write-Host "所有关键产物齐全"
+          "{0:N0} MB" -f ((Get-ChildItem TFTAssetMaker -Recurse |
+            Measure-Object -Property Length -Sum).Sum / 1MB)
+
+      # 冒烟测试：offscreen 启动，确认不闪退
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $p = Start-Process -FilePath ".\TFTAssetMaker\TFTAssetMaker.exe" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { Write-Error "exe 启动即退出, ExitCode=$($p.ExitCode)"; exit 1 }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "冒烟测试通过：exe 正常启动"
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path TFTAssetMaker\* -DestinationPath TFTAssetMaker-win64.zip -Force
+          "{0:N0} MB" -f ((Get-Item TFTAssetMaker-win64.zip).Length / 1MB)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TFTAssetMaker-win64
+          path: TFTAssetMaker-win64.zip
+          retention-days: 30
+
+      # 推 tag（v*）时自动发 Release
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TFTAssetMaker-win64.zip
+          generate_release_notes: true

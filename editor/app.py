@@ -200,14 +200,17 @@ class MainWindow(QMainWindow):
     def _play_tick(self):
         if self._play_gen is None:
             return
+        # 注意：解码到流尾时 PyAV 抛的是 av.error.EOFError，它并非 StopIteration
+        # 的子类；只捕获 StopIteration 会让异常逃出 QTimer 槽导致程序中断。
+        # 故这里统一捕获 Exception（StopIteration 亦是其子类）。
         try:
             idx, frame = next(self._play_gen)
-        except StopIteration:
+        except Exception:  # noqa: BLE001 - 含 StopIteration 与 av.error.*
             inp, out = self._loop_bounds       # 循环回到入点
-            self._play_gen = self._src.iter_frames(inp, out + 1)
             try:
+                self._play_gen = self._src.iter_frames(inp, out + 1)
                 idx, frame = next(self._play_gen)
-            except StopIteration:
+            except Exception:  # noqa: BLE001
                 self._stop_play()
                 return
         self._index = idx
